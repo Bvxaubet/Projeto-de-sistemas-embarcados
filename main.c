@@ -111,6 +111,11 @@
 #define ESTADO_ANTERIOR 2
 #define HARD_RESET 3
 
+#define ABOUT_TASK_PRIORITY     (tskIDLE_PRIORITY + 1)
+#define ABOUT_TASK_DELAY        (33 / portTICK_RATE_MS)
+
+#define TERMINAL_TASK_PRIORITY  (tskIDLE_PRIORITY + 1)
+#define TERMINAL_TASK_DELAY     (1000 / portTICK_RATE_MS)
 
 //! Estrutura das Protothreads 
 typedef struct
@@ -121,12 +126,15 @@ typedef struct
 } FSM_STATE_TABLE;
 
 //! prototipos dos estados 
-void init();
-void le_sensor();
-void calcula_media();
-void mostra_display();
-void ocioso();
-void hard_reset();
+void init(void);
+void le_sensor(void);
+void calcula_media(void);
+void mostra_display(void);
+void ocioso(void);
+void hard_reset(void);
+void debounce(void);
+int converte_celcius_task (int);
+void mostra_console_task(void);
 
 //! Tabela de estados 
 const FSM_STATE_TABLE StateTable [NUMERO_ESTADOS][NUMERO_EVENTOS] =
@@ -135,7 +143,7 @@ const FSM_STATE_TABLE StateTable [NUMERO_ESTADOS][NUMERO_EVENTOS] =
       le_sensor,      SENSOR,              le_sensor,      CALCULA_MEDIA, 	 le_sensor,      CALCULA_MEDIA,        le_sensor,      RESET_APPICATION, 
       calcula_media,  CALCULA_MEDIA,       calcula_media,  MOSTRA_DISPLAY,       calcula_media,  MOSTRA_DISPLAY,       calcula_media,  RESET_APPICATION,
       mostra_display, MOSTRA_DISPLAY,      mostra_display, ESPERA_TAXA,	         mostra_display, ESPERA_TAXA,	       mostra_display, RESET_APPICATION,
-      ocioso,         ESPERA_TAXA,         ocioso,         SENSOR,      	 ocioso,         MOSTRA_DISPLAY,       ocioso,         RESET_APPICATION,   
+      ocioso,         ESPERA_TAXA,         ocioso,         SENSOR,	         ocioso,         MOSTRA_DISPLAY,       ocioso,         RESET_APPICATION,   
       hard_reset,     INICIO,              hard_reset,     INICIO,               hard_reset,     INICIO,               hard_reset,     RESET_APPICATION,             
 };
 
@@ -153,6 +161,8 @@ void configure_rtc_count(void);
 void configure_eeprom(void);
 void configure_adc(void);
 
+
+
 /// Variáveis Real Time Counter
 struct rtc_module rtc_instance;
 struct adc_module adc_instance;
@@ -167,7 +177,7 @@ char mensagem [20];
 
 
 uint8_t temperatura_atual = 0;
-uint8_t temp_min   = 10000 ;
+uint8_t temp_min   = 255 ;
 uint8_t temp_media = 0 ;
 uint8_t temp_max   = 0 ;
 
@@ -202,7 +212,7 @@ void configure_eeprom(void)
 	{
 		/* Erase the emulated EEPROM memory (assume it is unformatted or
 		 * irrecoverably corrupt) */
-		printf("Memory error!!!\n");
+		printf("Memory error!!! \r\n");
 		eeprom_emulator_erase_memory();
 		eeprom_emulator_init();
 	}
@@ -219,7 +229,14 @@ void SYSCTRL_Handler(void)
 }
 #endif
 
-
+/// Converte a temperatura para celcius
+//@param temperatura
+int converte_celcius_task (int __temperatura)
+{
+	//printf("CONVERTE CELCIUS  %d -> %d \r\n", __temperatura, ((__temperatura - 32) * 5 )/9  );
+	return ( ( ( (int)__temperatura - 32) * 5)/9);
+	
+}
 //! Estava no exemplo
 static void configure_bod(void)
 {
@@ -293,11 +310,19 @@ void init()
 	temp_max = page_data[2];
 	temp_min = page_data[3];
 	
+	
+	/// task 1 Conversao de Farenheit pra celcius
+	///  (funcao, paramentros, size, NULL, prioridade, NULL
+	xTaskCreate( converte_celcius_task, "Converte", 100, NULL, ABOUT_TASK_PRIORITY, NULL);
+	
+	xTaskCreate( mostra_console_task, NULL, 50, NULL, TERMINAL_TASK_PRIORITY, NULL);
+	
 	//! PRINT DE DEBUG
 	printf("Inicializando\r\n"); 
 	
 	evento = PROXIMO_ESTADO;
 }
+
 
 //! Leitura de Sensor
 void le_sensor()
@@ -309,15 +334,20 @@ void le_sensor()
 	do {
 		/// Aguarda a conversao e guarda o resultado em temperatura_atual 
 	} while (adc_read(&adc_instance, &conversao_temperatura) == STATUS_BUSY); 
-	printf("CONVERSAO = %d\n", conversao_temperatura);
-	temperatura_atual =  ((float)conversao_temperatura*3.3/(4096))/0.01;  // conversao se necessario		
-	printf("Lendo do sensor !!\r\n");
+	printf("CONVERSAO = %d \r\n", conversao_temperatura);
+	
+	temperatura_atual =  ((float)conversao_temperatura*3.3/(4096))/0.01;
+	temperatura_atual = converte_celcius_task(temperatura_atual);
+		
+	vTaskDelay(ABOUT_TASK_DELAY);
+	
+	//printf("Lendo do sensor !!\r\n");
 	
 	evento = PROXIMO_ESTADO;
 }
 
+/// Calcula a media das temperaturas e salva na memoria
 void calcula_media(){
-	
 	
 	if (temperatura_atual > temp_max){
 		temp_max = temperatura_atual;
@@ -340,50 +370,48 @@ void calcula_media(){
 	evento = PROXIMO_ESTADO;
 }
 
+void mostra_console_task(void)
+{
+	/// Debug, Mostrando no console
+	printf ( "\nTemperatura Atual  %d \r\n", temperatura_atual);
+	printf ( "Temperatura Minima %d \r\n",   temp_min);
+	printf ( "Temperatura Media  %d \r\n",   temp_media);
+	printf ( "Temperatura Maxima %d \r\n",   temp_max);
+}
+
 /// Switch que mostra o display
 void mostra_display()
 {
-	char quebra[1] = "\n";
-	char temperatura_max[] = " Temp Max :";
-	char temperatura_med[] = " Temp Med :";
-	char temperatura_min[] = " Temp Min :";
-	char limpa_limpa[] = "\n\n\n";
 	/// Debug
 	printf ( "Mostrando display\r\n");
 	
-	/// Debug, Mostrando no console
-	printf ( "Temperatura Atual  %d\n", ( int) temperatura_atual);
-	printf ( "Temperatura Minima %d\n", ( int) temp_min);
-	printf ( "Temperatura Media  %d\n", ( int) temp_media);
-	printf ( "Temperatura Maxima %d\n", ( int) temp_max);
-
-
-
+	//temperatura_atual = converte_celcius(temperatura_atual);
+	
+	mostra_console_task();
 	switch (estado)
 	{
-		
 		case TEMP_ATUAL:
 		strcpy(mensagem, "Temperatura  Atual:");
 		itoa ((int)temperatura_atual , c, 10);
-		printf ("temp atual %d\n", (int)temperatura_atual);
+		//printf ("temp atual %d\n", (int)temperatura_atual);
 		break;
 		
 		case MEIO:
 		strcpy(mensagem, "Temperatura  Media:");
 		itoa ((int)temp_media, c, 10);
-		printf ("temp media %d\n", (int)temp_media);
+		//printf ("temp media %d\n", (int)temp_media);
 		break;
 		
 		case TEMP_MAX:
 		strcpy(mensagem, "Temperatura Maxima:");
 		itoa ((int)temp_max, c, 10);
-		printf ("temp max %d\n", (int)temp_max);
+		//printf ("temp max %d\n", (int)temp_max);
 		break;
 		
 		case TEMP_MIN:
 		strcpy(mensagem, "Temperatura Minima:");
 		itoa ((int)temp_min, c, 10);
-		printf ("temp min %d\n", (int)temp_min);
+		//printf ("temp min %d\n", (int)temp_min);
 		break;
 	}
 	
@@ -394,6 +422,7 @@ void mostra_display()
 	
 	x = 54;
 	y = 10;
+	strcat(c, "  ");
 	gfx_mono_draw_string(c, x, y, &sysfont);
 	evento = PROXIMO_ESTADO;
 }
@@ -452,7 +481,7 @@ void hard_reset()
 
 int main (void)
 {
-	int i = 0;
+	//int i = 0;
 	system_init();
 	usart_get_config_defaults(&usart_conf);
 	usart_conf.baudrate    = 9600;
@@ -477,4 +506,3 @@ int main (void)
 		currentState = StateTable[currentState][evento].NextState;	
 	}
 }
-
